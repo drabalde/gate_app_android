@@ -1,16 +1,30 @@
-# gate_on_app
+# 🚪 Controle de Portão com Flutter e Tuya Cloud
 
-A new Flutter project.
+Aplicativo Flutter para controlar um portão automatizado utilizando a API da Tuya Cloud e um dispositivo 433MHz.
 
-## Getting Started
+## 🔧 Funcionalidades
 
-This project is a starting point for a Flutter application.
+- Conexão com a Tuya Cloud usando `client_id` e `client_secret`
+- Envio de comando de pulso para abrir o portão
+- Leitura do estado atual do portão (ligado/desligado)
+- Interface para configurar `device_id`, tempo de pulso e credenciais
+- Tratamento de erros e indicador de carregamento
+- Atualização automática do access token
 
-A few resources to get you started if this is your first Flutter project:
+## 📱 Interface
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+![screenshot](link-da-screenshot-aqui)
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 🚀 Como usar
+
+1. Clone o projeto:
+   ```bash
+   git clone https://github.com/seu-usuario/seu-repositorio.git
+   cd seu-repositorio
+
+2. Instale as dependências:
+	flutter pub get
+
+3. Rode o app
+	flutter run
+

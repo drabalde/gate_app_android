@@ -30,7 +30,6 @@ class ConfigPage extends StatefulWidget {
   State<ConfigPage> createState() => _ConfigPageState();
 }
 
-// Página de controle do portão
 class GateControlPage extends StatefulWidget {
   const GateControlPage({super.key});
 
@@ -44,6 +43,7 @@ class _GateControlPageState extends State<GateControlPage> {
   String? deviceId;
   double pulseDuration = 1.0;
   String? accessToken;
+  int? tokenExpiry;
   bool isLoading = false;
   bool? isOn;
 
@@ -59,8 +59,17 @@ class _GateControlPageState extends State<GateControlPage> {
     clientSecret = prefs.getString('client_secret');
     deviceId = prefs.getString('device_id');
     pulseDuration = (prefs.getDouble('pulse') ?? 1.0);
-    await _getAccessToken();
+    accessToken = prefs.getString('access_token');
+    tokenExpiry = prefs.getInt('token_expiry');
+    await _ensureValidToken();
     await getDeviceStatus();
+  }
+
+  Future<void> _ensureValidToken() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (accessToken == null || tokenExpiry == null || now >= tokenExpiry!) {
+      await _getAccessToken();
+    }
   }
 
   String sha256Hash(String data) {
@@ -74,109 +83,128 @@ class _GateControlPageState extends State<GateControlPage> {
   }
 
   Future<void> _getAccessToken() async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    final nonce = const Uuid().v4();
-    final contentSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    final uriPath = "/v1.0/token?grant_type=1";
-    final stringToSign = "GET\n$contentSHA256\n\n$uriPath";
-    final payload = clientId! + timestamp + nonce + stringToSign;
-    final sign = generateSign(payload, clientSecret!);
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final nonce = const Uuid().v4();
+      final contentSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      final uriPath = "/v1.0/token?grant_type=1";
+      final stringToSign = "GET\n$contentSHA256\n\n$uriPath";
+      final payload = clientId! + timestamp + nonce + stringToSign;
+      final sign = generateSign(payload, clientSecret!);
 
-    final response = await http.get(
-      Uri.parse('https://openapi.tuyaus.com/v1.0/token?grant_type=1'),
-      headers: {
-        'client_id': clientId!,
-        'sign': sign,
-        't': timestamp,
-        'sign_method': 'HMAC-SHA256',
-        'nonce': nonce,
-      },
-    );
+      final response = await http.get(
+        Uri.parse('https://openapi.tuyaus.com/v1.0/token?grant_type=1'),
+        headers: {
+          'client_id': clientId!,
+          'sign': sign,
+          't': timestamp,
+          'sign_method': 'HMAC-SHA256',
+          'nonce': nonce,
+        },
+      );
 
-    final data = jsonDecode(response.body);
-    if (data['success'] == true) {
-      setState(() {
-        accessToken = data['result']['access_token'];
-      });
-    } else {
-      _showError(data['msg'] ?? 'Erro desconhecido');
+      final data = jsonDecode(response.body);
+      if (data['success'] == true) {
+        final prefs = await SharedPreferences.getInstance();
+        final expiresIn = (data['result']['expire_time'] ?? 7200 * 1000);
+        final expiryTime = DateTime.now().millisecondsSinceEpoch + expiresIn.toInt();
+        setState(() {
+          accessToken = data['result']['access_token'];
+          tokenExpiry = expiryTime.toInt();
+        });
+        await prefs.setString('access_token', accessToken!);
+        await prefs.setInt('token_expiry', tokenExpiry!);
+      } else {
+        _showError(data['msg'] ?? 'Erro desconhecido');
+      }
+    } catch (e) {
+      _showError('Erro ao obter token: $e');
     }
   }
 
   Future<void> getDeviceStatus() async {
     if (accessToken == null || deviceId == null) return;
-    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    final nonce = const Uuid().v4();
-    final uriPath = "/v1.0/iot-03/devices/$deviceId/status";
-    final stringToSign = "GET\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\n$uriPath";
-    final payload = clientId! + accessToken! + timestamp + nonce + stringToSign;
-    final sign = generateSign(payload, clientSecret!);
-
-    final response = await http.get(
-      Uri.parse('https://openapi.tuyaus.com$uriPath'),
-      headers: {
-        'client_id': clientId!,
-        'access_token': accessToken!,
-        'sign': sign,
-        'sign_method': 'HMAC-SHA256',
-        't': timestamp,
-        'nonce': nonce,
-      },
-    );
-
-    final data = jsonDecode(response.body);
-    if (data['success'] == true) {
-      final statusList = data['result'] as List<dynamic>;
-      final switchStatus = statusList.firstWhere(
-        (e) => e['code'] == 'switch_1',
-        orElse: () => null,
+    await _ensureValidToken();
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final nonce = const Uuid().v4();
+      final uriPath = "/v1.0/iot-03/devices/$deviceId/status";
+      final stringToSign = "GET\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\n$uriPath";
+      final payload = clientId! + accessToken! + timestamp + nonce + stringToSign;
+      final sign = generateSign(payload, clientSecret!);
+      final response = await http.get(
+        Uri.parse('https://openapi.tuyaus.com$uriPath'),
+        headers: {
+          'client_id': clientId!,
+          'access_token': accessToken!,
+          'sign': sign,
+          'sign_method': 'HMAC-SHA256',
+          't': timestamp,
+          'nonce': nonce,
+        },
       );
-      setState(() => isOn = switchStatus?['value']);
-    } else {
-      _showError(data['msg'] ?? 'Erro ao obter status');
+
+      final data = jsonDecode(response.body);
+      if (data['success'] == true) {
+        final statusList = data['result'] as List<dynamic>;
+        final switchStatus = statusList.firstWhere(
+          (e) => e['code'] == 'switch_1',
+          orElse: () => null,
+        );
+        setState(() => isOn = switchStatus?['value']);
+      } else {
+        _showError(data['msg'] ?? 'Erro ao obter status');
+      }
+    } catch (e) {
+      _showError('Erro de conexão ao obter status: $e');
     }
   }
 
   Future<void> sendCommand(bool turnOn) async {
-    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-    final nonce = const Uuid().v4();
-    final uriPath = '/v1.0/iot-03/devices/$deviceId/commands';
-    final url = 'https://openapi.tuyaus.com$uriPath';
+    await _ensureValidToken();
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final nonce = const Uuid().v4();
+      final uriPath = '/v1.0/iot-03/devices/$deviceId/commands';
+      final url = 'https://openapi.tuyaus.com$uriPath';
 
-    final commandBody = jsonEncode({
-      "commands": [
-        {"code": "switch_1", "value": turnOn}
-      ]
-    });
+      final commandBody = jsonEncode({
+        "commands": [
+          {"code": "switch_1", "value": turnOn}
+        ]
+      });
 
-    final contentSha256 = sha256Hash(commandBody);
-    final stringToSign = "POST\n$contentSha256\n\n$uriPath";
-    final signPayload = clientId! + accessToken! + timestamp + nonce + stringToSign;
-    final signature = generateSign(signPayload, clientSecret!);
+      final contentSha256 = sha256Hash(commandBody);
+      final stringToSign = "POST\n$contentSha256\n\n$uriPath";
+      final signPayload = clientId! + accessToken! + timestamp + nonce + stringToSign;
+      final signature = generateSign(signPayload, clientSecret!);
 
-    final response = await http.post(
-      Uri.parse(url),
-      headers: {
-        'Content-Type': 'application/json',
-        'client_id': clientId!,
-        'access_token': accessToken!,
-        'sign': signature,
-        'sign_method': 'HMAC-SHA256',
-        't': timestamp,
-        'nonce': nonce,
-      },
-      body: commandBody,
-    );
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {
+          'Content-Type': 'application/json',
+          'client_id': clientId!,
+          'access_token': accessToken!,
+          'sign': signature,
+          'sign_method': 'HMAC-SHA256',
+          't': timestamp,
+          'nonce': nonce,
+        },
+        body: commandBody,
+      );
 
-    final data = jsonDecode(response.body);
-    if (data['success'] != true) {
-      _showError(data['msg'] ?? 'Erro ao enviar comando');
+      final data = jsonDecode(response.body);
+      if (data['success'] != true) {
+        _showError(data['msg'] ?? 'Erro ao enviar comando');
+      }
+    } catch (e) {
+      _showError('Erro ao enviar comando: $e');
     }
   }
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Erro: $message')),
+      SnackBar(content: Text(message)),
     );
   }
 
@@ -206,58 +234,75 @@ class _GateControlPageState extends State<GateControlPage> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FB),
-      appBar: AppBar(
-        title: const Text('Controle do Portão'),
-        backgroundColor: Colors.indigo,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withAlpha(13),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  )
-                ],
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(backgroundColor: statusColor, radius: 8),
-                  const SizedBox(width: 8),
-                  Text('Status: $statusText'),
-                ],
-              ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF1A237E), Color(0xFF7986CB)],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withAlpha(13),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(backgroundColor: statusColor, radius: 8),
+                      const SizedBox(width: 8),
+                      Text('Status: $statusText'),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 30),
+                Text('Tempo do Pulso: ${pulseDuration.toStringAsFixed(1)} segundos', style: const TextStyle(color: Colors.white)),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    backgroundColor: Colors.indigo,
+                  ),
+                  onPressed: isLoading ? null : pulseGate,
+                  child: isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text('Acionar', style: TextStyle(fontSize: 16, color: Colors.white)),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  onPressed: isLoading ? null : getDeviceStatus,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Atualizar Status'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () => Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ConfigPage()),
+                  ),
+                  child: const Text('Alterar configurações', style: TextStyle(color: Colors.white)),
+                ),
+              ],
             ),
-            const SizedBox(height: 30),
-            Text('Tempo do Pulso: ${pulseDuration.toStringAsFixed(1)} segundos'),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                backgroundColor: Colors.indigo,
-              ),
-              onPressed: isLoading ? null : pulseGate,
-              child: isLoading
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Text('Acionar', style: TextStyle(fontSize: 16, color: Colors.white)),
-            ),
-            const SizedBox(height: 20),
-            TextButton(
-              onPressed: () => Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (_) => const ConfigPage()),
-              ),
-              child: const Text('Alterar configurações'),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -272,6 +317,8 @@ class _ConfigPageState extends State<ConfigPage> {
   final _pulseController = TextEditingController(text: '1');
   bool isSaving = false;
   bool canEditCredentials = false;
+  bool _showClientId = false;
+  bool _showClientSecret = false;
 
   @override
   void initState() {
@@ -285,8 +332,8 @@ class _ConfigPageState extends State<ConfigPage> {
     _clientSecretController.text = prefs.getString('client_secret') ?? '';
     _deviceIdController.text = prefs.getString('device_id') ?? '';
     _pulseController.text = prefs.get('pulse') is int
-    ? (prefs.getInt('pulse') ?? 1).toStringAsFixed(1)
-    : (prefs.getDouble('pulse') ?? 1.0).toStringAsFixed(1);
+      ? (prefs.getInt('pulse') ?? 1).toStringAsFixed(1)
+      : (prefs.getDouble('pulse') ?? 1.0).toStringAsFixed(1);
   }
 
   Future<void> _saveConfig() async {
@@ -301,10 +348,13 @@ class _ConfigPageState extends State<ConfigPage> {
     await prefs.setDouble('pulse', double.parse(_pulseController.text));
 
     if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => const GateControlPage()),
-    );
+    await Future.delayed(const Duration(milliseconds: 100)); // pequena espera
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const GateControlPage()),
+      );
+    }
   }
 
   void _toggleEdit() {
@@ -333,16 +383,28 @@ class _ConfigPageState extends State<ConfigPage> {
               ),
               TextFormField(
                 controller: _clientIdController,
-                decoration: const InputDecoration(labelText: 'Client ID'),
+                decoration: InputDecoration(
+                  labelText: 'Client ID',
+                  suffixIcon: IconButton(
+                    icon: Icon(_showClientId ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _showClientId = !_showClientId),
+                  ),
+                ),
                 enabled: canEditCredentials,
-                obscureText: true,
+                obscureText: !_showClientId,
                 validator: (v) => v == null || v.isEmpty ? 'Obrigatório' : null,
               ),
               TextFormField(
                 controller: _clientSecretController,
-                decoration: const InputDecoration(labelText: 'Client Secret'),
+                decoration: InputDecoration(
+                  labelText: 'Client Secret',
+                  suffixIcon: IconButton(
+                    icon: Icon(_showClientSecret ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _showClientSecret = !_showClientSecret),
+                  ),
+                ),
                 enabled: canEditCredentials,
-                obscureText: true,
+                obscureText: !_showClientSecret,
                 validator: (v) => v == null || v.isEmpty ? 'Obrigatório' : null,
               ),
               const SizedBox(height: 10),
@@ -364,7 +426,6 @@ class _ConfigPageState extends State<ConfigPage> {
                   return null;
                 },
               ),
-
               const SizedBox(height: 20),
               ElevatedButton(
                 onPressed: isSaving ? null : _saveConfig,
@@ -377,5 +438,3 @@ class _ConfigPageState extends State<ConfigPage> {
     );
   }
 }
-
-
